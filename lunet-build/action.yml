@@ -1,0 +1,156 @@
+name: Lunet Build
+description: Checkout a repository, install Lunet, build the site, prepare a Pages artifact, and optionally deploy to GitHub Pages.
+
+inputs:
+  repository:
+    description: Repository to checkout (owner/name). Defaults to the caller repository.
+    required: false
+    default: ""
+  ref:
+    description: Git ref (branch, tag, or SHA) to checkout.
+    required: false
+    default: ""
+  token:
+    description: Token used by checkout. Defaults to github.token.
+    required: false
+    default: ""
+  checkout_path:
+    description: Directory inside GITHUB_WORKSPACE where sources are checked out.
+    required: false
+    default: "source"
+  submodules:
+    description: Submodule checkout mode passed to actions/checkout.
+    required: false
+    default: "recursive"
+  fetch_depth:
+    description: Fetch depth passed to actions/checkout.
+    required: false
+    default: "0"
+  dotnet_version:
+    description: .NET SDK version used to run Lunet.
+    required: false
+    default: "10.0.x"
+  lunet_version:
+    description: Lunet .NET tool version range.
+    required: false
+    default: "1.*"
+  site_path:
+    description: Path to the Lunet site folder inside the checked out repository.
+    required: false
+    default: "site"
+  build_command:
+    description: Command executed in site_path to build the website.
+    required: false
+    default: "lunet --stacktrace build"
+  output_path:
+    description: Path to built output folder, relative to site_path.
+    required: false
+    default: ".lunet/build/www"
+  setup_pages:
+    description: Set to true to run actions/configure-pages.
+    required: false
+    default: "true"
+  upload_pages_artifact:
+    description: Set to true to upload output_path with actions/upload-pages-artifact.
+    required: false
+    default: "true"
+  deploy_pages:
+    description: Set to true to deploy the uploaded artifact with actions/deploy-pages.
+    required: false
+    default: "true"
+
+outputs:
+  repository:
+    description: Repository that was built.
+    value: ${{ steps.paths.outputs.repository }}
+  checkout_directory:
+    description: Absolute path of the checked out repository.
+    value: ${{ steps.paths.outputs.checkout_directory }}
+  site_directory:
+    description: Absolute path of the site directory used for building.
+    value: ${{ steps.paths.outputs.site_directory }}
+  output_directory:
+    description: Absolute path of the output directory produced by Lunet.
+    value: ${{ steps.paths.outputs.output_directory }}
+  page_url:
+    description: URL of the deployed GitHub Pages site when deploy_pages is true.
+    value: ${{ steps.deploy.outputs.page_url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve repository and paths
+      id: paths
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        repository="${{ inputs.repository }}"
+        if [ -z "$repository" ]; then
+          repository="${{ github.repository }}"
+        fi
+
+        checkout_directory="${{ github.workspace }}/${{ inputs.checkout_path }}"
+        site_directory="$checkout_directory/${{ inputs.site_path }}"
+        output_directory="$site_directory/${{ inputs.output_path }}"
+
+        echo "repository=$repository" >> "$GITHUB_OUTPUT"
+        echo "checkout_directory=$checkout_directory" >> "$GITHUB_OUTPUT"
+        echo "site_directory=$site_directory" >> "$GITHUB_OUTPUT"
+        echo "output_directory=$output_directory" >> "$GITHUB_OUTPUT"
+
+    - name: Checkout repository
+      if: ${{ inputs.ref == '' }}
+      uses: actions/checkout@v5
+      with:
+        repository: ${{ steps.paths.outputs.repository }}
+        token: ${{ inputs.token != '' && inputs.token || github.token }}
+        submodules: ${{ inputs.submodules }}
+        fetch-depth: ${{ inputs.fetch_depth }}
+        path: ${{ inputs.checkout_path }}
+
+    - name: Checkout repository (custom ref)
+      if: ${{ inputs.ref != '' }}
+      uses: actions/checkout@v5
+      with:
+        repository: ${{ steps.paths.outputs.repository }}
+        ref: ${{ inputs.ref }}
+        token: ${{ inputs.token != '' && inputs.token || github.token }}
+        submodules: ${{ inputs.submodules }}
+        fetch-depth: ${{ inputs.fetch_depth }}
+        path: ${{ inputs.checkout_path }}
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: ${{ inputs.dotnet_version }}
+
+    - name: Install Lunet tool
+      shell: bash
+      run: |
+        set -euo pipefail
+        dotnet tool update --global lunet --version "${{ inputs.lunet_version }}" || \
+          dotnet tool install --global lunet --version "${{ inputs.lunet_version }}"
+        echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+
+    - name: Build website
+      shell: bash
+      working-directory: ${{ steps.paths.outputs.site_directory }}
+      run: |
+        set -euo pipefail
+        ${{ inputs.build_command }}
+
+    - name: Configure Pages
+      if: ${{ inputs.setup_pages == 'true' }}
+      uses: actions/configure-pages@v5
+
+    - name: Upload Pages artifact
+      if: ${{ inputs.upload_pages_artifact == 'true' }}
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: ${{ steps.paths.outputs.output_directory }}
+
+    - name: Deploy to GitHub Pages
+      id: deploy
+      if: ${{ inputs.deploy_pages == 'true' }}
+      uses: actions/deploy-pages@v4
